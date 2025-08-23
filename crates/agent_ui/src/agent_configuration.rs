@@ -93,14 +93,6 @@ impl AgentConfiguration {
         let scroll_handle = ScrollHandle::new();
         let scrollbar_state = ScrollbarState::new(scroll_handle.clone());
 
-        let mut expanded_provider_configurations = HashMap::default();
-        if LanguageModelRegistry::read_global(cx)
-            .provider(&ZED_CLOUD_PROVIDER_ID)
-            .map_or(false, |cloud_provider| cloud_provider.must_accept_terms(cx))
-        {
-            expanded_provider_configurations.insert(ZED_CLOUD_PROVIDER_ID, true);
-        }
-
         let mut this = Self {
             fs,
             language_registry,
@@ -109,7 +101,7 @@ impl AgentConfiguration {
             configuration_views_by_provider: HashMap::default(),
             context_server_store,
             expanded_context_server_tools: HashMap::default(),
-            expanded_provider_configurations,
+            expanded_provider_configurations: HashMap::default(),
             tools,
             _registry_subscription: registry_subscription,
             scroll_handle,
@@ -137,7 +129,11 @@ impl AgentConfiguration {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let configuration_view = provider.configuration_view(window, cx);
+        let configuration_view = provider.configuration_view(
+            language_model::ConfigurationViewTargetAgent::ZedAgent,
+            window,
+            cx,
+        );
         self.configuration_views_by_provider
             .insert(provider.id(), configuration_view);
     }
@@ -161,8 +157,8 @@ impl AgentConfiguration {
         provider: &Arc<dyn LanguageModelProvider>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        let provider_id = provider.id().0.clone();
-        let provider_name = provider.name().0.clone();
+        let provider_id = provider.id().0;
+        let provider_name = provider.name().0;
         let provider_id_string = SharedString::from(format!("provider-disclosure-{provider_id}"));
 
         let configuration_view = self
@@ -188,7 +184,7 @@ impl AgentConfiguration {
         let is_signed_in = self
             .workspace
             .read_with(cx, |workspace, _| {
-                workspace.client().status().borrow().is_connected()
+                !workspace.client().status().borrow().is_signed_out()
             })
             .unwrap_or(false);
 
@@ -265,7 +261,7 @@ impl AgentConfiguration {
                                     .closed_icon(IconName::ChevronDown),
                             )
                             .on_click(cx.listener({
-                                let provider_id = provider.id().clone();
+                                let provider_id = provider.id();
                                 move |this, _event, _window, _cx| {
                                     let is_expanded = this
                                         .expanded_provider_configurations
@@ -300,6 +296,7 @@ impl AgentConfiguration {
             )
             .child(
                 div()
+                    .w_full()
                     .px_2()
                     .when(is_expanded, |parent| match configuration_view {
                         Some(configuration_view) => parent.child(configuration_view),
@@ -465,7 +462,7 @@ impl AgentConfiguration {
             "modifier-send",
             "Use modifier to submit a message",
             Some(
-                "Make a modifier (cmd-enter on macOS, ctrl-enter on Linux) required to send messages.".into(),
+                "Make a modifier (cmd-enter on macOS, ctrl-enter on Linux or Windows) required to send messages.".into(),
             ),
             use_modifier_to_send,
             move |state, _window, cx| {
@@ -660,7 +657,7 @@ impl AgentConfiguration {
                     .size(IconSize::XSmall)
                     .color(Color::Accent)
                     .with_animation(
-                        SharedString::from(format!("{}-starting", context_server_id.0.clone(),)),
+                        SharedString::from(format!("{}-starting", context_server_id.0,)),
                         Animation::new(Duration::from_secs(3)).repeat(),
                         |icon, delta| icon.transform(Transformation::rotate(percentage(delta))),
                     )
@@ -860,7 +857,6 @@ impl AgentConfiguration {
                                     .on_click({
                                         let context_server_manager =
                                             self.context_server_store.clone();
-                                        let context_server_id = context_server_id.clone();
                                         let fs = self.fs.clone();
 
                                         move |state, _window, cx| {
@@ -953,7 +949,7 @@ impl AgentConfiguration {
                 }
 
                 parent.child(v_flex().py_1p5().px_1().gap_1().children(
-                    tools.into_iter().enumerate().map(|(ix, tool)| {
+                    tools.iter().enumerate().map(|(ix, tool)| {
                         h_flex()
                             .id(("tool-item", ix))
                             .px_1()
@@ -1035,7 +1031,6 @@ fn extension_only_provides_context_server(manifest: &ExtensionManifest) -> bool 
         && manifest.grammars.is_empty()
         && manifest.language_servers.is_empty()
         && manifest.slash_commands.is_empty()
-        && manifest.indexed_docs_providers.is_empty()
         && manifest.snippets.is_none()
         && manifest.debug_locators.is_empty()
 }
@@ -1071,7 +1066,6 @@ fn show_unable_to_uninstall_extension_with_context_server(
         cx,
         move |this, _cx| {
             let workspace_handle = workspace_handle.clone();
-            let context_server_id = context_server_id.clone();
 
             this.icon(ToastIcon::new(IconName::Warning).color(Color::Warning))
                 .dismiss_button(true)
